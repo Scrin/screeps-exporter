@@ -45,6 +45,7 @@ type Room struct {
 	Creeps                  int64            `json:"creeps"`
 	EnergyAvailable         float64          `json:"energyAvailable"`
 	EnergyCapacityAvailable float64          `json:"energyCapacityAvailable"`
+	Storage                 map[string]int64 `json:"storage"`
 }
 
 type Stats struct {
@@ -75,6 +76,7 @@ var (
 	energy             *prometheus.GaugeVec
 	creeps             *prometheus.GaugeVec
 	structures         *prometheus.GaugeVec
+	storage            *prometheus.GaugeVec
 	processingDuration prometheus.Histogram
 )
 
@@ -120,6 +122,10 @@ func setup() {
 		Name: prefix + "structures",
 		Help: "Structure counts",
 	}, roomTypedLabels)
+	storage = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: prefix + "storage",
+		Help: "Storage contents",
+	}, roomTypedLabels)
 	processingDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    prefix + "stats_processing_time",
 		Help:    "Time it has taken to process stats",
@@ -135,6 +141,7 @@ func setup() {
 	prometheus.MustRegister(energy)
 	prometheus.MustRegister(creeps)
 	prometheus.MustRegister(structures)
+	prometheus.MustRegister(storage)
 	prometheus.MustRegister(processingDuration)
 }
 
@@ -198,6 +205,7 @@ func updateStats() {
 	energy.Reset()
 	creeps.Reset()
 	structures.Reset()
+	storage.Reset()
 	for name, room := range stats.Rooms {
 		rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "level"}).Set(float64(room.RCL.Level))
 		rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "progress"}).Set(float64(room.RCL.Progress))
@@ -210,6 +218,9 @@ func updateStats() {
 
 		for structureType, count := range room.Structures {
 			structures.With(prometheus.Labels{"shard": shard, "room": name, "type": structureType}).Set(float64(count))
+		}
+		for resourceType, amount := range room.Storage {
+			storage.With(prometheus.Labels{"shard": shard, "room": name, "type": resourceType}).Set(float64(amount))
 		}
 	}
 	processingDuration.Observe(time.Since(start).Seconds())
