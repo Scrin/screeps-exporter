@@ -46,6 +46,7 @@ type Room struct {
 	EnergyAvailable         float64          `json:"energyAvailable"`
 	EnergyCapacityAvailable float64          `json:"energyCapacityAvailable"`
 	Storage                 map[string]int64 `json:"storage"`
+	Terminal                map[string]int64 `json:"terminal"`
 }
 
 type Stats struct {
@@ -60,8 +61,9 @@ type Stats struct {
 const prefix = "screeps_"
 
 var (
-	shard = ""
-	token = ""
+	shards  []string
+	segment = "0"
+	token   = ""
 
 	client = &http.Client{}
 
@@ -77,6 +79,7 @@ var (
 	creeps             *prometheus.GaugeVec
 	structures         *prometheus.GaugeVec
 	storage            *prometheus.GaugeVec
+	terminal           *prometheus.GaugeVec
 	processingDuration prometheus.Histogram
 )
 
@@ -126,6 +129,10 @@ func setup() {
 		Name: prefix + "storage",
 		Help: "Storage contents",
 	}, roomTypedLabels)
+	terminal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: prefix + "terminal",
+		Help: "Terminal contents",
+	}, roomTypedLabels)
 	processingDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    prefix + "stats_processing_time",
 		Help:    "Time it has taken to process stats",
@@ -142,85 +149,124 @@ func setup() {
 	prometheus.MustRegister(creeps)
 	prometheus.MustRegister(structures)
 	prometheus.MustRegister(storage)
+	prometheus.MustRegister(terminal)
 	prometheus.MustRegister(processingDuration)
 }
 
-func updateStats() {
-	start := time.Now()
+func getStatsFromMemory(shard string) (Stats, error) {
 	req, err := http.NewRequest("GET", "https://screeps.com/api/user/memory?shard="+shard, nil)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return Stats{}, err
 	}
 	req.Header.Set("X-Token", token)
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return Stats{}, err
 	}
 	defer resp.Body.Close()
 	var memoryResponse MemoryResponse
 	err = json.NewDecoder(resp.Body).Decode(&memoryResponse)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return Stats{}, err
 	}
 	data := strings.TrimPrefix(memoryResponse.Data, "gz:")
 	z, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return Stats{}, err
 	}
 	r, err := gzip.NewReader(bytes.NewReader(z))
 	if err != nil {
-		fmt.Println(err)
-		return
+		return Stats{}, err
 	}
 	defer r.Close()
 	var memory Memory
 	err = json.NewDecoder(r).Decode(&memory)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return Stats{}, err
 	}
+	return memory.Stats.History[len(memory.Stats.History)-1], nil
+}
 
-	stats := memory.Stats.History[len(memory.Stats.History)-1]
+func getStatsFromMemorySegment(shard string) (Stats, error) {
+	req, err := http.NewRequest("GET", "https://screeps.com/api/user/memory-segment?segment="+segment+"&shard="+shard, nil)
+	if err != nil {
+		return Stats{}, err
+	}
+	req.Header.Set("X-Token", token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer resp.Body.Close()
+	var memoryResponse MemoryResponse
+	err = json.NewDecoder(resp.Body).Decode(&memoryResponse)
+	if err != nil {
+		return Stats{}, err
+	}
+	var stats Stats
+	err = json.Unmarshal([]byte(memoryResponse.Data), &stats)
+	if err != nil {
+		return Stats{}, err
+	}
+	return stats, nil
+}
 
-	tick.With(prometheus.Labels{"shard": shard}).Set(float64(stats.Tick))
-	ms.With(prometheus.Labels{"shard": shard}).Set(float64(stats.Ms))
+func updateStats() {
+	start := time.Now()
 
-	cpu.With(prometheus.Labels{"shard": shard, "type": "used"}).Set(float64(stats.CPU.Used))
-	cpu.With(prometheus.Labels{"shard": shard, "type": "limit"}).Set(float64(stats.CPU.Limit))
-	cpu.With(prometheus.Labels{"shard": shard, "type": "bucket"}).Set(float64(stats.CPU.Bucket))
-
-	gcl.With(prometheus.Labels{"shard": shard, "type": "level"}).Set(float64(stats.GCL.Level))
-	gcl.With(prometheus.Labels{"shard": shard, "type": "progress"}).Set(float64(stats.GCL.Progress))
-	gcl.With(prometheus.Labels{"shard": shard, "type": "progressTotal"}).Set(float64(stats.GCL.ProgressTotal))
-
-	gpl.With(prometheus.Labels{"shard": shard, "type": "level"}).Set(float64(stats.GPL.Level))
-	gpl.With(prometheus.Labels{"shard": shard, "type": "progress"}).Set(float64(stats.GPL.Progress))
-	gpl.With(prometheus.Labels{"shard": shard, "type": "progressTotal"}).Set(float64(stats.GPL.ProgressTotal))
+	var statsMap = make(map[string]Stats)
+	for _, shard := range shards {
+		stats, err := getStatsFromMemorySegment(shard)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		statsMap[shard] = stats
+	}
 
 	rcl.Reset()
 	energy.Reset()
 	creeps.Reset()
 	structures.Reset()
 	storage.Reset()
-	for name, room := range stats.Rooms {
-		rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "level"}).Set(float64(room.RCL.Level))
-		rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "progress"}).Set(float64(room.RCL.Progress))
-		rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "progressTotal"}).Set(float64(room.RCL.ProgressTotal))
+	terminal.Reset()
 
-		energy.With(prometheus.Labels{"shard": shard, "room": name, "type": "available"}).Set(float64(room.EnergyAvailable))
-		energy.With(prometheus.Labels{"shard": shard, "room": name, "type": "capacityAvailable"}).Set(float64(room.EnergyCapacityAvailable))
+	for _, shard := range shards {
+		var stats = statsMap[shard]
+		tick.With(prometheus.Labels{"shard": shard}).Set(float64(stats.Tick))
+		ms.With(prometheus.Labels{"shard": shard}).Set(float64(stats.Ms))
 
-		creeps.With(prometheus.Labels{"shard": shard, "room": name}).Set(float64(room.Creeps))
+		cpu.With(prometheus.Labels{"shard": shard, "type": "used"}).Set(float64(stats.CPU.Used))
+		cpu.With(prometheus.Labels{"shard": shard, "type": "limit"}).Set(float64(stats.CPU.Limit))
+		cpu.With(prometheus.Labels{"shard": shard, "type": "bucket"}).Set(float64(stats.CPU.Bucket))
 
-		for structureType, count := range room.Structures {
-			structures.With(prometheus.Labels{"shard": shard, "room": name, "type": structureType}).Set(float64(count))
-		}
-		for resourceType, amount := range room.Storage {
-			storage.With(prometheus.Labels{"shard": shard, "room": name, "type": resourceType}).Set(float64(amount))
+		gcl.With(prometheus.Labels{"shard": shard, "type": "level"}).Set(float64(stats.GCL.Level))
+		gcl.With(prometheus.Labels{"shard": shard, "type": "progress"}).Set(float64(stats.GCL.Progress))
+		gcl.With(prometheus.Labels{"shard": shard, "type": "progressTotal"}).Set(float64(stats.GCL.ProgressTotal))
+
+		gpl.With(prometheus.Labels{"shard": shard, "type": "level"}).Set(float64(stats.GPL.Level))
+		gpl.With(prometheus.Labels{"shard": shard, "type": "progress"}).Set(float64(stats.GPL.Progress))
+		gpl.With(prometheus.Labels{"shard": shard, "type": "progressTotal"}).Set(float64(stats.GPL.ProgressTotal))
+
+		for name, room := range stats.Rooms {
+			rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "level"}).Set(float64(room.RCL.Level))
+			rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "progress"}).Set(float64(room.RCL.Progress))
+			rcl.With(prometheus.Labels{"shard": shard, "room": name, "type": "progressTotal"}).Set(float64(room.RCL.ProgressTotal))
+
+			energy.With(prometheus.Labels{"shard": shard, "room": name, "type": "available"}).Set(float64(room.EnergyAvailable))
+			energy.With(prometheus.Labels{"shard": shard, "room": name, "type": "capacityAvailable"}).Set(float64(room.EnergyCapacityAvailable))
+
+			creeps.With(prometheus.Labels{"shard": shard, "room": name}).Set(float64(room.Creeps))
+
+			for structureType, count := range room.Structures {
+				structures.With(prometheus.Labels{"shard": shard, "room": name, "type": structureType}).Set(float64(count))
+			}
+			for resourceType, amount := range room.Storage {
+				storage.With(prometheus.Labels{"shard": shard, "room": name, "type": resourceType}).Set(float64(amount))
+			}
+			for resourceType, amount := range room.Terminal {
+				terminal.With(prometheus.Labels{"shard": shard, "room": name, "type": resourceType}).Set(float64(amount))
+			}
 		}
 	}
 	processingDuration.Observe(time.Since(start).Seconds())
@@ -230,19 +276,21 @@ func main() {
 	for _, e := range os.Environ() {
 		split := strings.SplitN(e, "=", 2)
 		switch split[0] {
-		case "SCREEPS_SHARD":
-			shard = split[1]
+		case "SCREEPS_SHARDS":
+			shards = strings.Split(split[1], ",")
+		case "SCREEPS_SEGMENT":
+			segment = split[1]
 		case "SCREEPS_TOKEN":
 			token = split[1]
 		}
 	}
 
 	if len(os.Args) > 2 {
-		shard = os.Args[1]
+		shards = strings.Split(os.Args[1], ",")
 		token = os.Args[2]
 	}
 
-	if shard == "" || token == "" {
+	if len(shards) < 1 || token == "" {
 		log.Fatal("invalid config")
 	}
 
