@@ -62,12 +62,14 @@ type Room struct {
 }
 
 type Stats struct {
-	Tick  float64         `json:"tick"`
-	Ms    float64         `json:"ms"`
-	CPU   Cpu             `json:"cpu"`
-	GCL   Progress        `json:"gcl"`
-	GPL   Progress        `json:"gpl"`
-	Rooms map[string]Room `json:"rooms"`
+	Tick                float64         `json:"tick"`
+	Ms                  float64         `json:"ms"`
+	LastGlobalResetTick float64         `json:"lastGlobalResetTick"`
+	LastGlobalResetMs   float64         `json:"lastGlobalResetMs"`
+	CPU                 Cpu             `json:"cpu"`
+	GCL                 Progress        `json:"gcl"`
+	GPL                 Progress        `json:"gpl"`
+	Rooms               map[string]Room `json:"rooms"`
 }
 
 const prefix = "screeps_"
@@ -86,6 +88,8 @@ var (
 	marketOrders       *prometheus.GaugeVec
 	tick               *prometheus.GaugeVec
 	ms                 *prometheus.GaugeVec
+	resetTick          *prometheus.GaugeVec
+	resetMs            *prometheus.GaugeVec
 	cpu                *prometheus.GaugeVec
 	gcl                *prometheus.GaugeVec
 	gpl                *prometheus.GaugeVec
@@ -124,6 +128,14 @@ func setup() {
 	ms = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: prefix + "ms",
 		Help: "Current time",
+	}, baseLabels)
+	resetTick = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: prefix + "global_reset_tick",
+		Help: "Last global reset tick",
+	}, baseLabels)
+	resetMs = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: prefix + "global_reset_ms",
+		Help: "Last global reset time",
 	}, baseLabels)
 	cpu = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: prefix + "cpu",
@@ -172,6 +184,8 @@ func setup() {
 	prometheus.MustRegister(marketOrders)
 	prometheus.MustRegister(tick)
 	prometheus.MustRegister(ms)
+	prometheus.MustRegister(resetTick)
+	prometheus.MustRegister(resetMs)
 	prometheus.MustRegister(cpu)
 	prometheus.MustRegister(gcl)
 	prometheus.MustRegister(gpl)
@@ -300,6 +314,8 @@ func updateStats() {
 		var stats = statsMap[shard]
 		tick.With(prometheus.Labels{"shard": shard}).Set(stats.Tick)
 		ms.With(prometheus.Labels{"shard": shard}).Set(stats.Ms)
+		resetTick.With(prometheus.Labels{"shard": shard}).Set(stats.LastGlobalResetTick)
+		resetMs.With(prometheus.Labels{"shard": shard}).Set(stats.LastGlobalResetMs)
 
 		cpu.With(prometheus.Labels{"shard": shard, "type": "used"}).Set(stats.CPU.Used)
 		cpu.With(prometheus.Labels{"shard": shard, "type": "limit"}).Set(stats.CPU.Limit)
