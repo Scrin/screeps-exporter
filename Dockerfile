@@ -1,7 +1,7 @@
-FROM golang:1.15
+FROM golang:1.20
 
-COPY . /go/src/screeps-exporter/
-RUN go get screeps-exporter/...
-RUN go install screeps-exporter
+WORKDIR /go/src/github.com/Scrin/screeps-exporter/
+COPY . ./
+RUN go install .
 
 CMD screeps-exporter
